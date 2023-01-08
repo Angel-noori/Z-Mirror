@@ -4,6 +4,7 @@ asyncio
 beautifulsoup4
 bencoding
 cfscrape
+dnspython
 feedparser
 flask
 google-api-python-client
@@ -15,12 +16,12 @@ lxml
 pillow
 playwright
 psutil
-psycopg2-binary
 pybase64
+pymongo
 pyrogram
 python-dotenv
 python-magic
-python-telegram-bot
+python-telegram-bot==13.15
 qbittorrent-api
 requests
 telegraph

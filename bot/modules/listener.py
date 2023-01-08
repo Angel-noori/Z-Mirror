@@ -1,57 +1,85 @@
-from requests import utils as rutils
-from threading import Thread
-from re import search as re_search
-from time import sleep
-from os import path as ospath, remove as osremove, listdir, walk
-from subprocess import Popen
+from re import search
 from html import escape
-from bot import *
-from bot.helper.ext_utils.fs_utils import get_base_name, get_path_size, split_file, clean_download, clean_target
-from bot.helper.ext_utils.exceptions import NotSupportedExtractionArchive
-from bot.helper.ext_utils.shortenurl import short_url
-from bot.helper.mirror_utils.status_utils.extract_status import ExtractStatus
-from bot.helper.mirror_utils.status_utils.zip_status import ZipStatus
-from bot.helper.mirror_utils.status_utils.split_status import SplitStatus
-from bot.helper.mirror_utils.status_utils.upload_status import UploadStatus
-from bot.helper.mirror_utils.status_utils.tg_upload_status import TgUploadStatus
-from bot.helper.mirror_utils.upload_utils.gdriveTools import GoogleDriveHelper
-from bot.helper.mirror_utils.upload_utils.pyrogramEngine import TgUploader
-from bot.helper.telegram_helper.message_utils import sendMessage, sendMarkup, delete_all_messages, update_all_messages, auto_delete_upload_message
-from bot.helper.telegram_helper.button_build import ButtonMaker
+from subprocess import Popen
+from time import sleep, time
+from requests import utils as rutils
+from os import listdir, path, remove, walk
 from bot.helper.ext_utils.db_handler import DbManger
-from bot.helper.ext_utils.telegraph_helper import telegraph
-from bot.helper.ext_utils.bot_utils import is_url, is_magnet
+from bot.helper.ext_utils.shortener import short_url
+from bot.helper.telegram_helper.button_build import ButtonMaker
+from bot.helper.ext_utils.queued_starter import start_from_queued
+from bot.helper.mirror_utils.status_utils.zip_status import ZipStatus
+from bot.helper.mirror_utils.status_utils.queue_status import QueueStatus
+from bot.helper.mirror_utils.status_utils.split_status import SplitStatus
+from bot.helper.ext_utils.exceptions import NotSupportedExtractionArchive
+from bot.helper.mirror_utils.upload_utils.pyrogramEngine import TgUploader
+from bot.helper.mirror_utils.status_utils.upload_status import UploadStatus
+from bot.helper.mirror_utils.status_utils.extract_status import ExtractStatus
+from bot.helper.mirror_utils.upload_utils.gdriveTools import GoogleDriveHelper
+from bot.helper.mirror_utils.status_utils.tg_upload_status import TgUploadStatus
+from bot.helper.ext_utils.bot_utils import (extra_btns, get_category_btns, get_readable_time)
+from bot import (CATEGORY_INDEXS, CATEGORY_NAMES, DATABASE_URL, DOWNLOAD_DIR, config_dict, download_dict,
+                 LOGGER, MAX_SPLIT_SIZE, SHORTENERES, Interval, aria2, btn_listener, download_dict_lock,
+                 non_queued_dl, non_queued_up, queue_dict_lock, queued_up, queued_dl, status_reply_dict_lock, user_data)
+from bot.helper.ext_utils.fs_utils import (clean_download, clean_target, get_base_name, get_path_size, split_file)
+from bot.helper.telegram_helper.message_utils import (delete_all_messages, delete_links, editMessage, sendMessage, update_all_messages)
 
 class MirrorLeechListener:
-    def __init__(self, bot, message, isZip=False, extract=False, isQbit=False, isLeech=False, pswd=None, tag=None, select=False, seed=False):
-        self.bot = bot
-        self.message = message
-        self.uid = message.message_id
-        self.extract = extract
-        self.isZip = isZip
-        self.isQbit = isQbit
-        self.isLeech = isLeech
-        self.pswd = pswd
-        self.tag = tag
-        self.seed = seed
-        self.newDir = ""
-        self.dir = f"{DOWNLOAD_DIR}{self.uid}"
-        self.select = select
-        self.isPrivate = message.chat.type in ['private', 'group']
-        self.suproc = None
-        self.user_id = self.message.from_user.id
+    def __init__(self, bot, message, isZip=False, extract=False, isQbit=False, c_index=0, dmMessage=None,
+                isLeech=False, pswd=None, tag=None, select=False, seed=False, raw_url=None, logMessage=None):
+        self.bot         = bot
+        self.tag         = tag
+        self.pswd        = pswd
+        self.seed        = seed
+        self.newDir      = ""
+        self.suproc      = None
+        self.isZip       = isZip
+        self.select      = select
+        self.isQbit      = isQbit
+        self.queuedUp    = False
+        self.raw_url     = raw_url
+        self.c_index     = c_index
+        self.isLeech     = isLeech
+        self.message     = message
+        self.extract     = extract
+        self.dmMessage   = dmMessage
+        self.logMessage  = logMessage
+        self.uid         = message.message_id
+        self.dir         = f"{DOWNLOAD_DIR}{self.uid}"
+        self.isPrivate   = message.chat.type in ['private', 'group']
 
     def clean(self):
         try:
-            Interval[0].cancel()
-            Interval.clear()
+            with status_reply_dict_lock:
+                Interval[0].cancel()
+                Interval.clear()
             aria2.purge()
             delete_all_messages()
         except:
             pass
 
+    def selectCategory(self):
+        if len(CATEGORY_NAMES) <= 1 or self.isLeech:
+            return
+        btn_listener[self.uid] = [30, time(), self, self.c_index]
+        text, btns = get_category_btns(30, self.uid, self.c_index)
+        engine = sendMessage(text, self.bot, self.message, btns)
+        start_time = time()
+        while self.uid in btn_listener:
+            if time() - start_time >= 30:
+                del btn_listener[self.uid]
+                mode = f'Drive {CATEGORY_NAMES[self.c_index]}'
+                if self.isZip:
+                    mode += ' as Zip'
+                elif self.extract:
+                    mode += ' as Unzip'
+                self.mode = mode
+                editMessage(f"Timed out! Task has been set.\n\n<b>Upload</b>: {mode}", engine)
+
     def onDownloadStart(self):
-        if not self.isPrivate and INCOMPLETE_TASK_NOTIFIER and DB_URI is not None:
+        if DATABASE_URL and config_dict['STOP_DUPLICATE_TASKS'] and self.raw_url:
+            DbManger().add_download_url(self.raw_url, self.tag)
+        if not self.isPrivate and config_dict['INCOMPLETE_TASK_NOTIFIER'] and DATABASE_URL:
             DbManger().add_incomplete_task(self.message.chat.id, self.message.link, self.tag)
 
     def onDownloadComplete(self):
@@ -60,31 +88,37 @@ class MirrorLeechListener:
             name = str(download.name()).replace('/', '')
             gid = download.gid()
         LOGGER.info(f"Download completed: {name}")
-        if name == "None" or self.isQbit or not ospath.exists(f"{self.dir}/{name}"):
-            name = listdir(f"{self.dir}")[-1]
+        if name == "None" or self.isQbit or not path.exists(f"{self.dir}/{name}"):
+            name = listdir(self.dir)[-1]
         m_path = f'{self.dir}/{name}'
         size = get_path_size(m_path)
+        with queue_dict_lock:
+            if self.uid in non_queued_dl:
+                non_queued_dl.remove(self.uid)
+        start_from_queued()
+        user_dict = user_data.get(self.message.from_user.id, False)
         if self.isZip:
             if self.seed and self.isLeech:
                 self.newDir = f"{self.dir}10000"
-                path = f"{self.newDir}/{name}.zip"
+                path_ = f"{self.newDir}/{name}.zip"
             else:
-                path = f"{m_path}.zip"
+                path_ = f"{m_path}.zip"
             with download_dict_lock:
                 download_dict[self.uid] = ZipStatus(name, size, gid, self)
-            if self.pswd is not None:
+            LEECH_SPLIT_SIZE = user_dict and user_dict.get('split_size') or config_dict['LEECH_SPLIT_SIZE']
+            if self.pswd:
                 if self.isLeech and int(size) > LEECH_SPLIT_SIZE:
-                    LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path}.0*')
-                    self.suproc = Popen(["7z", f"-v{LEECH_SPLIT_SIZE}b", "a", "-mx=0", f"-p{self.pswd}", path, m_path])
+                    LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path_}.0*')
+                    self.suproc = Popen(["7z", f"-v{LEECH_SPLIT_SIZE}b", "a", "-mx=0", f"-p{self.pswd}", path_, m_path])
                 else:
-                    LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path}')
-                    self.suproc = Popen(["7z", "a", "-mx=0", f"-p{self.pswd}", path, m_path])
+                    LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path_}')
+                    self.suproc = Popen(["7z", "a", "-mx=0", f"-p{self.pswd}", path_, m_path])
             elif self.isLeech and int(size) > LEECH_SPLIT_SIZE:
-                LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path}.0*')
-                self.suproc = Popen(["7z", f"-v{LEECH_SPLIT_SIZE}b", "a", "-mx=0", path, m_path])
+                LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path_}.0*')
+                self.suproc = Popen(["7z", f"-v{LEECH_SPLIT_SIZE}b", "a", "-mx=0", path_, m_path])
             else:
-                LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path}')
-                self.suproc = Popen(["7z", "a", "-mx=0", path, m_path])
+                LOGGER.info(f'Zip: orig_path: {m_path}, zip_path: {path_}')
+                self.suproc = Popen(["7z", "a", "-mx=0", path_, m_path])
             self.suproc.wait()
             if self.suproc.returncode == -9:
                 return
@@ -92,26 +126,23 @@ class MirrorLeechListener:
                 clean_target(m_path)
         elif self.extract:
             try:
-                if ospath.isfile(m_path):
-                    path = get_base_name(m_path)
+                if path.isfile(m_path):
+                    path_ = get_base_name(m_path)
                 LOGGER.info(f"Extracting: {name}")
                 with download_dict_lock:
                     download_dict[self.uid] = ExtractStatus(name, size, gid, self)
-                if ospath.isdir(m_path):
+                if path.isdir(m_path):
                     if self.seed:
                         self.newDir = f"{self.dir}10000"
-                        path = f"{self.newDir}/{name}"
+                        path_ = f"{self.newDir}/{name}"
                     else:
-                        path = m_path
-                    for dirpath, subdir, files in walk(m_path, topdown=False):
+                        path_ = m_path
+                    for dirpath, _, files in walk(m_path, topdown=False):
                         for file_ in files:
-                            if re_search(r'\.part0*1\.rar$|\.7z\.0*1$|\.zip\.0*1$|\.zip$|\.7z$|^.(?!.*\.part\d+\.rar)(?=.*\.rar$)', file_):
-                                f_path = ospath.join(dirpath, file_)
-                                if self.seed:
-                                    t_path = dirpath.replace(self.dir, self.newDir)
-                                else:
-                                    t_path = dirpath
-                                if self.pswd is not None:
+                            if search('\.part0*1\.rar$|\.7z\.0*1$|\.zip\.0*1$|\.zip$|\.7z$|^.(?!.*\.part\d+\.rar)(?=.*\.rar$)', file_):
+                                f_path = path.join(dirpath, file_)
+                                t_path = dirpath.replace(self.dir, self.newDir) if self.seed else dirpath
+                                if self.pswd:
                                     self.suproc = Popen(["7z", "x", f"-p{self.pswd}", f_path, f"-o{t_path}", "-aot"])
                                 else:
                                     self.suproc = Popen(["7z", "x", f_path, f"-o{t_path}", "-aot"])
@@ -120,53 +151,54 @@ class MirrorLeechListener:
                                     return
                                 elif self.suproc.returncode != 0:
                                     LOGGER.error('Unable to extract archive splits!')
-                        if not self.seed and self.suproc is not None and self.suproc.returncode == 0:
+                        if not self.seed and self.suproc and self.suproc.returncode == 0:
                             for file_ in files:
-                                if re_search(r'\.r\d+$|\.7z\.\d+$|\.z\d+$|\.zip\.\d+$|\.zip$|\.rar$|\.7z$', file_):
-                                    del_path = ospath.join(dirpath, file_)
+                                if search('\.r\d+$|\.7z\.\d+$|\.z\d+$|\.zip\.\d+$|\.zip$|\.rar$|\.7z$', file_):
+                                    del_path = path.join(dirpath, file_)
                                     try:
-                                        osremove(del_path)
+                                        remove(del_path)
                                     except:
                                         return
                 else:
                     if self.seed and self.isLeech:
                         self.newDir = f"{self.dir}10000"
-                        path = path.replace(self.dir, self.newDir)
-                    if self.pswd is not None:
-                        self.suproc = Popen(["7z", "x", f"-p{self.pswd}", m_path, f"-o{path}", "-aot"])
+                        path_ = path_.replace(self.dir, self.newDir)
+                    if self.pswd:
+                        self.suproc = Popen(["7z", "x", f"-p{self.pswd}", m_path, f"-o{path_}", "-aot"])
                     else:
-                        self.suproc = Popen(["7z", "x", m_path, f"-o{path}", "-aot"])
+                        self.suproc = Popen(["7z", "x", m_path, f"-o{path_}", "-aot"])
                     self.suproc.wait()
                     if self.suproc.returncode == -9:
                         return
                     elif self.suproc.returncode == 0:
-                        LOGGER.info(f"Extracted Path: {path}")
+                        LOGGER.info(f"Extracted Path: {path_}")
                         if not self.seed:
                             try:
-                                osremove(m_path)
+                                remove(m_path)
                             except:
                                 return
                     else:
                         LOGGER.error('Unable to extract archive! Uploading anyway')
                         self.newDir = ""
-                        path = m_path
+                        path_ = m_path
             except NotSupportedExtractionArchive:
                 LOGGER.info("Not any valid archive, uploading file as it is.")
                 self.newDir = ""
-                path = m_path
+                path_ = m_path
         else:
-            path = m_path
-        up_dir, up_name = path.rsplit('/', 1)
+            path_ = m_path
+        up_dir, up_name = path_.rsplit('/', 1)
         size = get_path_size(up_dir)
         if self.isLeech:
             m_size = []
             o_files = []
             if not self.isZip:
                 checked = False
-                for dirpath, subdir, files in walk(up_dir, topdown=False):
+                LEECH_SPLIT_SIZE = user_dict and user_dict.get('split_size') or config_dict['LEECH_SPLIT_SIZE']
+                for dirpath, _, files in walk(up_dir, topdown=False):
                     for file_ in files:
-                        f_path = ospath.join(dirpath, file_)
-                        f_size = ospath.getsize(f_path)
+                        f_path = path.join(dirpath, file_)
+                        f_size = path.getsize(f_path)
                         if f_size > LEECH_SPLIT_SIZE:
                             if not checked:
                                 checked = True
@@ -179,20 +211,42 @@ class MirrorLeechListener:
                             if res == "errored":
                                 if f_size <= MAX_SPLIT_SIZE:
                                     continue
-                                else:
-                                    try:
-                                        osremove(f_path)
-                                    except:
-                                        return
-                            elif not self.seed or self.newDir:
                                 try:
-                                    osremove(f_path)
+                                    remove(f_path)
                                 except:
                                     return
-                            elif self.seed and res != "errored":
+                            elif not self.seed or self.newDir:
+                                try:
+                                    remove(f_path)
+                                except:
+                                    return
+                            else:
                                 m_size.append(f_size)
                                 o_files.append(file_)
+        up_limit = config_dict['QUEUE_UPLOAD']
+        all_limit = config_dict['QUEUE_ALL']
+        added_to_queue = False
+        with queue_dict_lock:
+            dl = len(non_queued_dl)
+            up = len(non_queued_up)
+            if (all_limit and dl + up >= all_limit and (not up_limit or up >= up_limit)) or (up_limit and up >= up_limit):
+                added_to_queue = True
+                LOGGER.info(f"Added to Queue/Upload: {name}")
+                queued_up[self.uid] = [self]
+        if added_to_queue:
+            with download_dict_lock:
+                download_dict[self.uid] = QueueStatus(name, size, gid, self, 'Up')
+                self.queuedUp = True
+            while self.queuedUp:
+                sleep(1)
+            with download_dict_lock:
+                if self.uid not in download_dict.keys():
+                    return
+            LOGGER.info(f'Start from Queued/Upload: {name}')
+        with queue_dict_lock:
+            non_queued_up.add(self.uid)
 
+        if self.isLeech:
             size = get_path_size(up_dir)
             for s in m_size:
                 size = size - s
@@ -202,260 +256,159 @@ class MirrorLeechListener:
             with download_dict_lock:
                 download_dict[self.uid] = tg_upload_status
             update_all_messages()
-            tg.upload(o_files)
+            tg.upload(o_files, m_size)
         else:
             up_path = f'{up_dir}/{up_name}'
             size = get_path_size(up_path)
             LOGGER.info(f"Upload Name: {up_name}")
-            drive = GoogleDriveHelper(up_name, up_dir, size, self)
+            drive = GoogleDriveHelper(up_name, up_dir, size, self, self.message.from_user.id)
             upload_status = UploadStatus(drive, size, gid, self)
             with download_dict_lock:
                 download_dict[self.uid] = upload_status
             update_all_messages()
-            drive.upload(up_name)
+            drive.upload(up_name, self.c_index)
 
-    def onUploadComplete(self, link: str, size, files, folders, typ, name):
-        if not self.isPrivate and INCOMPLETE_TASK_NOTIFIER and DB_URI is not None:
+    def onUploadComplete(self, link: str, size, files, folders, typ, name: str):
+        if DATABASE_URL and config_dict['STOP_DUPLICATE_TASKS'] and self.raw_url:
+            DbManger().remove_download(self.raw_url)
+        if not self.isPrivate and config_dict['INCOMPLETE_TASK_NOTIFIER'] and DATABASE_URL:
             DbManger().rm_complete_task(self.message.link)
-        mesg = self.message.text.split('\n')
-        message_args = mesg[0].split(' ', maxsplit=1)
-        reply_to = self.message.reply_to_message
-        if self.message.chat.type != 'private' and AUTO_DELETE_UPLOAD_MESSAGE_DURATION != -1 and reply_to is not None:
-            try:
-                reply_to.delete()
-            except Exception as e:
-                LOGGER.warning(e)
-                pass
-        msg = f"<b>Name: </b><code>{escape(name)}</code>\n\n<b>Size: </b>{size}"
-        if BOT_PM and FORCE_BOT_PM and not self.isPrivate:
-            botpm = f"<b>\n\nHey {self.tag}!, I have sent your stuff in PM.</b>\n"
-            buttons = ButtonMaker()
-            b_uname = bot.get_me().username
-            botstart = f"http://t.me/{b_uname}"
-            buttons.buildbutton("View links in PM", f"{botstart}")
-            sendMarkup(msg + botpm, self.bot, self.message, buttons.build_menu(2))
-            try:
-                self.message.delete()
-            except Exception as e:
-                    LOGGER.warning(e)
-            pass
-            reply_to = self.message.reply_to_message
-            if reply_to is not None and AUTO_DELETE_UPLOAD_MESSAGE_DURATION == -1:
-                reply_to.delete()
-
         if self.isLeech:
-            buttons = ButtonMaker()
-            if SOURCE_LINK is True:
-                try:
-                    source_link = message_args[1]
-                    if is_magnet(source_link):
-                        link = telegraph.create_page(
-                        title=f'{TITLE_NAME} Source Link',
-                        content=source_link,
-                    )["path"]
-                        buttons.buildbutton(f"🔗 Source Link", f"https://graph.org/{link}")
-                    else:
-                        buttons.buildbutton(f"🔗 Source Link", source_link)
-                except Exception as e:
-                    LOGGER.warning(e)
-                pass
-                if reply_to is not None:
-                    try:
-                        reply_text = reply_to.text
-                        if is_url(reply_text):
-                            source_link = reply_text.strip()
-                            if is_magnet(source_link):
-                                link = telegraph.create_page(
-                                    title=f'{TITLE_NAME} Source Link',
-                                    content=source_link,
-                                )["path"]
-                                buttons.buildbutton(f"🔗 Source Link", f"https://graph.org/{link}")
-                            else:
-                                buttons.buildbutton(f"🔗 Source Link", source_link)
-                    except Exception as e:
-                        LOGGER.warning(e)
-                        pass
-            if BOT_PM is True and FORCE_BOT_PM is False:
-                b_name = bot.get_me().username
-                botstart = f"http://t.me/{b_name}"
-                buttons.buildbutton("View file in PM", f"{botstart}")
-            msg += f'\n<b>Total Files: </b>{folders}'
+            msg = f'<b>Name</b>: <code>{escape(name)}</code>\n\n<b>Size</b>: {size}'
+            msg += f'\n<b>Total Files</b>: {folders}'
+            msg += f"\n<b>Elapsed</b>: {get_readable_time(time() - self.message.date.timestamp())}"
             if typ != 0:
-                msg += f'\n<b>Corrupted Files: </b>{typ}'
-            msg += f'\n<b>cc: </b>{self.tag}\n\n'
+                msg += f'\n<b>Corrupted Files</b>: {typ}'
+            msg += f'\n<b>#cc</b>: {self.tag}'
+            msg += f"\n<b>Upload</b>: {self.mode}\n\n"
             if not files:
                 sendMessage(msg, self.bot, self.message)
+            elif self.dmMessage:
+                sendMessage(msg, self.bot, self.dmMessage)
+                msg += '<b>Files has been sent in your DM.</b>'
+                sendMessage(msg, self.bot, self.message)
+                if self.logMessage:
+                    sendMessage(msg, self.bot, self.logMessage)
             else:
                 fmsg = ''
                 for index, (link, name) in enumerate(files.items(), start=1):
                     fmsg += f"{index}. <a href='{link}'>{name}</a>\n"
                     if len(fmsg.encode() + msg.encode()) > 4000:
-                        if FORCE_BOT_PM is False:
-                            upldmsg = sendMarkup(msg + fmsg, self.bot, self.message, buttons.build_menu(1))
-                            Thread(target=auto_delete_upload_message, args=(self.bot, self.message, upldmsg)).start()
+                        if self.logMessage:
+                            sendMessage(msg + fmsg, self.bot, self.logMessage)
+                        buttons = ButtonMaker()
+                        buttons = extra_btns(buttons)
+                        if self.message.chat.type != 'private':
+                            buttons.sbutton('Save This Message', 'save', 'footer')
+                        sendMessage(msg + fmsg, self.bot, self.message, buttons.build_menu(2))
                         sleep(1)
                         fmsg = ''
                 if fmsg != '':
-                    if FORCE_BOT_PM is False:
-                        upldmsg = sendMarkup(msg + fmsg, self.bot, self.message, buttons.build_menu(1))
-                        Thread(target=auto_delete_upload_message, args=(self.bot, self.message, upldmsg)).start()
-                if LEECH_LOG and FORCE_BOT_PM:
-                    try:
-                        for chatid in LEECH_LOG:
-                            bot.sendMessage(chat_id=chatid, text=msg + fmsg,
-                                            reply_markup=(buttons.build_menu(2)),
-                                            parse_mode='HTML', disable_web_page_preview=True)
-                    except Exception as e:
-                        LOGGER.warning(e)
+                    if self.logMessage:
+                        sendMessage(msg + fmsg, self.bot, self.logMessage)
+                    buttons = ButtonMaker()
+                    buttons = extra_btns(buttons)
+                    if self.message.chat.type != 'private':
+                        buttons.sbutton('Save This Message', 'save', 'footer')
+                    sendMessage(msg + fmsg, self.bot, self.message, buttons.build_menu(2))
             if self.seed:
                 if self.newDir:
                     clean_target(self.newDir)
+                with queue_dict_lock:
+                    if self.uid in non_queued_up:
+                        non_queued_up.remove(self.uid)
                 return
         else:
-            msg += f'\n\n<b>Type: </b>{typ}'
+            if SHORTENERES:
+                msg = f'<b>Name</b>: <code>.{escape(name).replace(" ", "-").replace(".", ",")}</code>\n\n<b>Size</b>: {size}'
+            else:
+                msg = f'<b>Name</b>: <code>{escape(name)}</code>\n\n<b>Size</b>: {size}'
+            msg += f'\n\n<b>Type</b>: {typ}'
             if typ == "Folder":
-                msg += f'\n<b>SubFolders: </b>{folders}'
-                msg += f'\n<b>Files: </b>{files}'
+                msg += f' |<b>SubFolders</b>: {folders}'
+                msg += f' |<b>Files</b>: {files}'
+            msg += f'\n\n<b>#cc</b>: {self.tag} | <b>Elapsed</b>: {get_readable_time(time() - self.message.date.timestamp())}'
+            msg += f"\n\n<b>Upload</b>: {self.mode}"
             buttons = ButtonMaker()
-            msg += f'\n\n<b>cc: </b>{self.tag}'
-            link = short_url(link)
-            buttons.buildbutton("☁️ Drive Link", link)
+            if not config_dict['DISABLE_DRIVE_LINK']:
+                link = short_url(link)
+                buttons.buildbutton("🔐 Drive Link", link)
             LOGGER.info(f'Done Uploading {name}')
-            if INDEX_URL is not None:
+            if INDEX_URL:= CATEGORY_INDEXS[self.c_index]:
                 url_path = rutils.quote(f'{name}')
-                share_url = f'{INDEX_URL}/{url_path}'
                 if typ == "Folder":
-                    share_url += '/'
-                    share_url = short_url(share_url)
-                    buttons.buildbutton("⚡ Index Link", share_url)
+                    share_url = short_url(f'{INDEX_URL}/{url_path}/')
+                    buttons.buildbutton("📁 Index Link", share_url)
                 else:
-                    share_url = short_url(share_url)
-                    buttons.buildbutton("⚡ Index Link", share_url)
-                    if VIEW_LINK:
-                        share_urls = f'{INDEX_URL}/{url_path}?a=view'
-                        share_urls = short_url(share_urls)
-                        buttons.buildbutton("🌐 View Link", share_urls)
-                    if SOURCE_LINK is True:
-                        try:
-                            mesg = message_args[1]
-                            if is_magnet(mesg):
-                                link = telegraph.create_page(
-                                    title=f'{TITLE_NAME} Source Link',
-                                    content=mesg,
-                                )["path"]
-                                buttons.buildbutton(f"🔗 Source Link", f"https://graph.org/{link}")
-                            elif is_url(mesg):
-                                source_link = mesg
-                                if source_link.startswith(("|", "pswd: ")):
-                                    pass
-                                else:
-                                    buttons.buildbutton(f"🔗 Source Link", source_link)
-                            else:
-                                pass
-                        except Exception as e:
-                            LOGGER.warning(e)
-                            pass
-                    if reply_to is not None:
-                        try:
-                            reply_text = reply_to.text
-                            if is_url(reply_text):
-                                source_link = reply_text.strip()
-                                if is_magnet(source_link):
-                                    link = telegraph.create_page(
-                                        title=f'{TITLE_NAME} Source Link',
-                                        content=source_link,
-                                    )["path"]
-                                    buttons.buildbutton(f"🔗 Source Link", f"https://graph.org/{link}")
-                                else:
-                                    buttons.buildbutton(f"🔗 Source Link", source_link)
-                        except Exception as e:
-                            LOGGER.warning(e)
-                            pass
-            if FORCE_BOT_PM is False or self.message.chat.type == 'private':
-                upldmsg = sendMarkup(msg, self.bot, self.message, buttons.build_menu(2))
-                Thread(target=auto_delete_upload_message, args=(self.bot, self.message, upldmsg)).start()
-            if MIRROR_LOGS:
-                try:
-                    for chatid in MIRROR_LOGS:
-                        bot.sendMessage(chat_id=chatid, text=msg,
-                                        reply_markup=(buttons.build_menu(2)),
-                                        parse_mode='HTML', disable_web_page_preview=True)
-                except Exception as e:
-                    LOGGER.warning(e)
-            if BOT_PM and self.message.chat.type != 'private':
-                try:
-                    bot.sendMessage(chat_id=self.user_id, text=msg,
-                                    reply_markup=(buttons.build_menu(2)),
-                                    parse_mode='HTML', disable_web_page_preview=True)
-                except Exception as e:
-                    LOGGER.warning(e)
-                    return
+                    share_url = short_url(f'{INDEX_URL}/{url_path}')
+                    buttons.buildbutton("🚀 Index Link", share_url)
+                    if config_dict['VIEW_LINK']:
+                        share_urls = short_url(f'{INDEX_URL}/{url_path}?a=view')
+                        buttons.buildbutton("💻 View Link", share_urls)
+            __btns = extra_btns(buttons)
+            if self.dmMessage:
+                sendMessage(msg, self.bot, self.dmMessage, __btns.build_menu(2))
+                msg += '\n\n<b>Links has been sent in your DM.</b>'
+                sendMessage(msg, self.bot, self.message)
+            else:
+                if self.message.chat.type != 'private':
+                    __btns.sbutton("Save This Message", 'save', 'footer')
+                sendMessage(msg, self.bot, self.message, __btns.build_menu(2))
+            if self.logMessage:
+                if config_dict['DISABLE_DRIVE_LINK']:
+                    link = short_url(link)
+                    buttons.buildbutton("🔐 Drive Link", link, 'header')
+                sendMessage(msg, self.bot, self.logMessage, buttons.build_menu(2))
             if self.seed:
                 if self.isZip:
                     clean_target(f"{self.dir}/{name}")
                 elif self.newDir:
                     clean_target(self.newDir)
+                with queue_dict_lock:
+                    if self.uid in non_queued_up:
+                        non_queued_up.remove(self.uid)
                 return
-        clean_download(self.dir)
-        with download_dict_lock:
-            try:
-                del download_dict[self.uid]
-            except Exception as e:
-                LOGGER.error(str(e))
-            count = len(download_dict)
-        if count == 0:
-            self.clean()
-        else:
-            update_all_messages()
+        self._clean_update()
 
-    def onDownloadError(self, error):
-        reply_to = self.message.reply_to_message
-        try:
-            if AUTO_DELETE_UPLOAD_MESSAGE_DURATION != -1 and reply_to is not None:
-                reply_to.delete()
-            else:
-                pass
-        except Exception as e:
-            LOGGER.warning(e)
-            pass
+    def onDownloadError(self, error, button=None):
         error = error.replace('<', ' ').replace('>', ' ')
-        clean_download(self.dir)
-        if self.newDir:
-            clean_download(self.newDir)
-        with download_dict_lock:
-            try:
-                del download_dict[self.uid]
-            except Exception as e:
-                LOGGER.error(str(e))
-            count = len(download_dict)
-        msg = f"{self.tag} your download has been stopped due to: {error}"
-        errmsg = sendMessage(msg, self.bot, self.message)
-        Thread(target=auto_delete_upload_message, args=(self.bot, self.message, errmsg)).start()
-        if count == 0:
-            self.clean()
-        else:
-            update_all_messages()
-
-        if not self.isPrivate and INCOMPLETE_TASK_NOTIFIER and DB_URI is not None:
-            DbManger().rm_complete_task(self.message.link)
+        msg = f"{self.tag} your download has been stopped due to: {error}\n<b>Elapsed</b>: {get_readable_time(time() - self.message.date.timestamp())}"
+        self._clean_update(msg, button)
 
     def onUploadError(self, error):
         e_str = error.replace('<', '').replace('>', '')
+        msg = f"{self.tag} {e_str}\n<b>Elapsed</b>: {get_readable_time(time() - self.message.date.timestamp())}"
+        self._clean_update(msg)
+
+    def _clean_update(self, msg=None, button=None):
         clean_download(self.dir)
         if self.newDir:
             clean_download(self.newDir)
         with download_dict_lock:
-            try:
+            if self.uid in download_dict:
                 del download_dict[self.uid]
-            except Exception as e:
-                LOGGER.error(str(e))
             count = len(download_dict)
-        errmsg = sendMessage(f"{self.tag} {e_str}", self.bot, self.message)
-        Thread(target=auto_delete_upload_message, args=(self.bot, self.message, errmsg)).start()
+        if msg:
+            msg += f"\n<b>Upload</b>: {self.mode}"
+            sendMessage(msg, self.bot, self.message, button)
         if count == 0:
             self.clean()
         else:
             update_all_messages()
-
-        if not self.isPrivate and INCOMPLETE_TASK_NOTIFIER and DB_URI is not None:
+        if DATABASE_URL and config_dict['STOP_DUPLICATE_TASKS'] and self.raw_url:
+            DbManger().remove_download(self.raw_url)
+        if not self.isPrivate and config_dict['INCOMPLETE_TASK_NOTIFIER'] and DATABASE_URL:
             DbManger().rm_complete_task(self.message.link)
+        with queue_dict_lock:
+            if self.uid in queued_dl:
+                del queued_dl[self.uid]
+            if self.uid in non_queued_dl:
+                non_queued_dl.remove(self.uid)
+            if self.uid in queued_up:
+                del queued_up[self.uid]
+            if self.uid in non_queued_up:
+                non_queued_up.remove(self.uid)
+
+        self.queuedUp = False
+        start_from_queued()
+        delete_links(self.bot, self.message)

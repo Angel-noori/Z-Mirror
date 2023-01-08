@@ -1,12 +1,15 @@
 from time import time
 from bot import aria2, LOGGER
-from bot.helper.ext_utils.bot_utils import MirrorStatus, get_readable_time, EngineStatus
+from bot.helper.ext_utils.bot_utils import MirrorStatus, get_readable_time
 
 def get_download(gid):
     try:
         return aria2.get_download(gid)
     except Exception as e:
-        LOGGER.error(f'{e}: while getting torrent info')
+        LOGGER.error(f'{e}: Aria2c, Error while getting torrent info')
+        return get_download(gid)
+
+engine_ = f"Aria2c v{aria2.client.get_version()['version']}"
 
 class AriaDownloadStatus:
 
@@ -17,10 +20,14 @@ class AriaDownloadStatus:
         self.start_time = 0
         self.seeding = seeding
         self.message = listener.message
+        self.source = self.__source()
+        self.engine = engine_
 
     def __update(self):
         self.__download = self.__download.live
-        if self.__download.followed_by_ids:
+        if self.__download is None:
+            self.__download = get_download(self.__gid)
+        elif self.__download.followed_by_ids:
             self.__gid = self.__download.followed_by_ids[0]
             self.__download = get_download(self.__gid)
 
@@ -46,6 +53,7 @@ class AriaDownloadStatus:
         return self.__download.download_speed_string()
 
     def name(self):
+        self.__update()
         return self.__download.name
 
     def size(self):
@@ -55,10 +63,9 @@ class AriaDownloadStatus:
         return self.__download.eta_string()
 
     def status(self):
-        self.__update()
         download = self.__download
         if download.is_waiting:
-            return MirrorStatus.STATUS_WAITING
+            return MirrorStatus.STATUS_QUEUEDL
         elif download.is_paused:
             return MirrorStatus.STATUS_PAUSED
         elif download.seeder and self.seeding:
@@ -76,7 +83,6 @@ class AriaDownloadStatus:
         return self.__download.upload_length_string()
 
     def upload_speed(self):
-        self.__update()
         return self.__download.upload_speed_string()
 
     def ratio(self):
@@ -97,19 +103,25 @@ class AriaDownloadStatus:
 
     def cancel_download(self):
         self.__update()
-        if self.__download.seeder:
+        if self.__download.seeder and self.seeding:
             LOGGER.info(f"Cancelling Seed: {self.name()}")
             self.__listener.onUploadError(f"Seeding stopped with Ratio: {self.ratio()} and Time: {self.seeding_time()}")
             aria2.remove([self.__download], force=True, files=True)
-        elif len(self.__download.followed_by_ids) != 0:
+        elif downloads := self.__download.followed_by:
             LOGGER.info(f"Cancelling Download: {self.name()}")
-            downloads = aria2.get_downloads(self.__download.followed_by_ids)
-            self.__listener.onDownloadError('Download stopped by user!')
+            self.__listener.onDownloadError('Download cancelled by user!')
+            downloads.append(self.__download)
             aria2.remove(downloads, force=True, files=True)
         else:
             LOGGER.info(f"Cancelling Download: {self.name()}")
             self.__listener.onDownloadError('Download stopped by user!')
-        aria2.remove([self.__download], force=True, files=True)
+            aria2.remove([self.__download], force=True, files=True)
 
-    def eng(self):
-        return EngineStatus.STATUS_ARIA
+    def __source(self):
+        reply_to = self.message.reply_to_message
+        return reply_to.from_user.username or reply_to.from_user.id if reply_to and \
+            not reply_to.from_user.is_bot else self.message.from_user.username \
+                or self.message.from_user.id
+
+    def mode(self):
+        return self.__listener.mode

@@ -1,14 +1,12 @@
-from os import path as ospath, getcwd, chdir
-from traceback import format_exc
 from textwrap import indent
+from traceback import format_exc
 from io import StringIO, BytesIO
-from telegram import ParseMode
-from telegram.ext import CommandHandler
+from bot import LOGGER, dispatcher
 from contextlib import redirect_stdout
+from telegram.ext import CommandHandler
+from os import path as ospath, getcwd, chdir
 from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.bot_commands import BotCommands
-from bot.helper.telegram_helper.message_utils import sendMessage
-from bot import LOGGER, dispatcher
 
 namespaces = {}
 
@@ -22,7 +20,6 @@ def namespace_of(chat, update, bot):
             'effective_chat': update.effective_chat,
             'update': update
         }
-
     return namespaces[chat]
 
 def log_input(update):
@@ -42,7 +39,7 @@ def send(msg, bot, update):
         bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"`{msg}`",
-            parse_mode=ParseMode.MARKDOWN)
+            parse_mode='Markdown')
 
 def evaluate(update, context):
     bot = context.bot
@@ -111,10 +108,10 @@ def clear(update, context):
         del namespaces[update.message.chat_id]
     send("Cleared locals.", bot, update)
 
-EVAL_HANDLER = CommandHandler(BotCommands.EvalCommand, evaluate, filters=CustomFilters.owner_filter, run_async=True)
-EXEC_HANDLER = CommandHandler(BotCommands.ExecCommand, execute, filters=CustomFilters.owner_filter, run_async=True)
-CLEAR_HANDLER = CommandHandler(BotCommands.ClearLocalsCommand, clear, filters=CustomFilters.owner_filter, run_async=True)
+eval_handler = CommandHandler(BotCommands.EvalCommand, evaluate, filters=CustomFilters.owner_filter)
+exec_handler = CommandHandler(BotCommands.ExecCommand, execute, filters=CustomFilters.owner_filter)
+clear_handler = CommandHandler(BotCommands.ClearLocalsCommand, clear, filters=CustomFilters.owner_filter)
 
-dispatcher.add_handler(EVAL_HANDLER)
-dispatcher.add_handler(EXEC_HANDLER)
-dispatcher.add_handler(CLEAR_HANDLER)
+dispatcher.add_handler(eval_handler)
+dispatcher.add_handler(exec_handler)
+dispatcher.add_handler(clear_handler)

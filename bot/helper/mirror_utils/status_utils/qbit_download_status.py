@@ -1,14 +1,17 @@
 from time import sleep
 from bot import LOGGER, get_client
-from bot.helper.ext_utils.bot_utils import MirrorStatus, get_readable_file_size, get_readable_time, EngineStatus
+from bot.helper.ext_utils.bot_utils import (MirrorStatus, get_readable_file_size, get_readable_time)
 
 def get_download(client, hash_):
     try:
         return client.torrents_info(torrent_hashes=hash_)[0]
     except Exception as e:
-        LOGGER.error(f'{e}: while getting torrent info')
+        LOGGER.error(f'{e}: Qbittorrent, Error while getting torrent info')
         client = get_client()
         return get_download(client, hash_)
+
+engine_ = f"qBittorrent {get_client().app.version}"
+
 class QbDownloadStatus:
 
     def __init__(self, listener, hash_, seeding=False):
@@ -18,6 +21,8 @@ class QbDownloadStatus:
         self.__info = get_download(self.__client, self.__hash)
         self.seeding = seeding
         self.message = listener.message
+        self.source = self.__source()
+        self.engine = engine_
 
     def __update(self):
         self.__info = get_download(self.__client, self.__hash)
@@ -44,6 +49,7 @@ class QbDownloadStatus:
         return f"{get_readable_file_size(self.__info.dlspeed)}/s"
 
     def name(self):
+        self.__update()
         if self.__info.state in ["metaDL", "checkingResumeData"]:
             return f"[METADATA]{self.__info.name}"
         else:
@@ -56,10 +62,9 @@ class QbDownloadStatus:
         return get_readable_time(self.__info.eta)
 
     def status(self):
-        self.__update()
         download = self.__info.state
         if download in ["queuedDL", "queuedUP"]:
-            return MirrorStatus.STATUS_WAITING
+            return MirrorStatus.STATUS_QUEUEDL
         elif download in ["pausedDL", "pausedUP"]:
             return MirrorStatus.STATUS_PAUSED
         elif download in ["checkingUP", "checkingDL"]:
@@ -79,7 +84,6 @@ class QbDownloadStatus:
         return f"{get_readable_file_size(self.__info.uploaded)}"
 
     def upload_speed(self):
-        self.__update()
         return f"{get_readable_file_size(self.__info.upspeed)}/s"
 
     def ratio(self):
@@ -110,6 +114,12 @@ class QbDownloadStatus:
             sleep(0.3)
             self.__listener.onDownloadError('Download stopped by user!')
             self.__client.torrents_delete(torrent_hashes=self.__hash, delete_files=True)
-    
-    def eng(self):
-        return EngineStatus.STATUS_QB
+
+    def __source(self):
+        reply_to = self.message.reply_to_message
+        return reply_to.from_user.username or reply_to.from_user.id if reply_to and \
+            not reply_to.from_user.is_bot else self.message.from_user.username \
+                or self.message.from_user.id
+
+    def mode(self):
+        return self.__listener.mode
