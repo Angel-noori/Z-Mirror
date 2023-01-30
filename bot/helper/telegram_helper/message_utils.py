@@ -155,9 +155,11 @@ def sendDmMessage(bot, message, dmMode, isLeech=False):
         sleep(r.retry_after * 1.5)
         return sendDmMessage(bot, message, isLeech)
     except Unauthorized:
+        delete_links(bot, message)
         buttons = ButtonMaker()
         buttons.buildbutton("Start", f"{bot.link}?start=start")
-        sendMessage("<b>You didn't START the bot in DM</b>", bot, message, buttons.build_menu(1))
+        uname = message.from_user.mention_html(message.from_user.first_name)
+        sendMessage(f"<b>Hey {uname}!\nYou didn't START the me in DM\nStart and try again.</b>", bot, message, buttons.build_menu(1))
         return 'BotNotStarted'
     except Exception as e:
         LOGGER.error(str(e))
@@ -170,14 +172,14 @@ def sendLogMessage(bot, message, link, tag):
         
         if (reply_to := message.reply_to_message) or "https://api.telegram.org/file/" in link:
             if reply_to.document or reply_to.video or reply_to.audio or reply_to.photo:
-                __forwared = reply_to.forward(log_chat)
-                __forwared.delete()
+                __forwarded = reply_to.forward(log_chat)
+                __forwarded.delete()
                 __temp = reply_to.copy(
                     log_chat,
                     caption=f'<b><a href="{message.link}">Source</a></b> | <b>#cc</b>: {tag} (<code>{message.from_user.id}</code>)'
                 )
-                __forwared.message_id = __temp['message_id']
-                return __forwared
+                __forwarded.message_id = __temp['message_id']
+                return __forwarded
         msg = f'<b><a href="{message.link}">Source</a></b>: <code>{link}</code>\n\n<b>#cc</b>: {tag} (<code>{message.from_user.id}</code>)'
         return bot.sendMessage(log_chat, disable_notification=True, text=msg)
     except RetryAfter as r:
@@ -211,7 +213,7 @@ def forcesub(bot, message, tag):
         btn = ButtonMaker()
         for key, value in join_button.items():
             btn.buildbutton(key, value)
-        return sendMessage(f'Dear {tag},\nPlease join our channel to use me!\nJoin And Try Again!\nThank You.', bot, message, btn.build_menu(2))
+        return sendMessage(f'Hey {tag}!\nPlease join our channel to use me!\nJoin And Try Again!\nThank You.', bot, message, btn.build_menu(2))
 
 def message_filter(bot, message, tag):
     if not config_dict['ENABLE_MESSAGE_FILTER']:
@@ -234,7 +236,7 @@ def message_filter(bot, message, tag):
 def chat_restrict(message):
     if not config_dict['ENABLE_CHAT_RESTRICT']:
         return
-    if not isAdmin(message):
+    if message.chat.type != message.chat.PRIVATE and not isAdmin(message):
         message.chat.restrict_member(message.from_user.id, ChatPermissions(), int(time() + 60))
 
 def delete_links(bot, message):

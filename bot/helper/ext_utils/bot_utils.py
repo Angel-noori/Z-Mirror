@@ -1,6 +1,6 @@
 from html import escape
 from math import ceil
-from re import findall
+from re import findall, match
 from threading import Event, Thread
 from time import time
 from urllib.parse import urlparse
@@ -183,6 +183,7 @@ def get_readable_message():
     cUl = 0
     cQdl = 0
     cQul = 0
+    cQu = 0
     with download_dict_lock:
         for c in list(download_dict.values()):
             if c.status() == MirrorStatus.STATUS_DOWNLOADING:
@@ -195,15 +196,14 @@ def get_readable_message():
                 cQul += 1
             cQu = cQdl + cQul
         tasks = len(download_dict)
-        msg = f"<b>Total:</b> <code>{tasks}</code> | <b>Dn:</b> <code>{cDl}</code> | <b>Up:</b> <code>{cUl}</code> | <b>Qu:</b> <code>{cQu}</code>\n<b>--------------------------------------</b>"
+        msg = f"<b>Tasks</b> ➜ <b>DL:</b> <code>{cDl}</code>  <b>UL:</b> <code>{cUl}</code>  <b>Queued:</b> <code>{cQu}</code>  <b>Total:</b> <code>{tasks}</code>\n<code>---------------------------------</code>"
         if STATUS_LIMIT := config_dict['STATUS_LIMIT']:
             globals()['PAGES'] = ceil(tasks/STATUS_LIMIT)
             if PAGE_NO > PAGES and PAGES != 0:
                 globals()['COUNT'] -= STATUS_LIMIT
                 globals()['PAGE_NO'] -= 1
         for index, download in enumerate(list(download_dict.values())[COUNT:], start=1):
-            msg += f'\n<b>File Name:</b> <a href="{download.message.link}">{escape(str(download.name()))}</a>'
-            msg += f"\n<b>Status:</b> <code>{download.status()}</code>"
+            msg += f'\n<b>{download.status()}:</b> <code>{escape(str(download.name()))}</code>'
             if download.status() not in [MirrorStatus.STATUS_SEEDING, MirrorStatus.STATUS_CONVERTING]:
                 msg += f"\n{get_progress_bar_string(download)} {download.progress()}"
                 if download.status() in [MirrorStatus.STATUS_DOWNLOADING,
@@ -243,10 +243,9 @@ def get_readable_message():
                 except:
                     pass
             msg += f"\n<b>Engine</b>: <code>{download.engine}</code>"
-            msg += f"\n<b>Task</b>: <a href='{download.message.link}'>{download.mode()}</a>"
-            msg += f"\n<b>By</b>: <a href='https://t.me/{download.message.from_user.username}'>{download.source}</a>"
+            msg += f"\n<b>Task</b>: <a href='{download.message.link}'>{download.mode()}</a> | <b>By</b>: <a href='https://t.me/{download.message.from_user.username}'>{download.source}</a>"
             if download.status() != MirrorStatus.STATUS_CONVERTING:
-                msg += f"\n<b>Stop</b>: <code>/{BotCommands.CancelMirror} {download.gid()}</code>"
+                msg += f"\n🛑 <code>/{BotCommands.CancelMirror} {download.gid()}</code>"
             msg += "\n\n"
             if STATUS_LIMIT and index == STATUS_LIMIT:
                 break
@@ -358,6 +357,9 @@ def is_url(url: str):
 
 def is_gdrive_link(url: str):
     return "drive.google.com" in urlparse(url).netloc
+
+def is_Sharerlink(url: str):
+    return bool(match(r'https?:\/\/.+\.gdtot\.\S+|https?:\/\/(filepress|filebee|appdrive|gdflix)\.\S+', url))
 
 def is_mega_link(url: str):
     url_ = urlparse(url)

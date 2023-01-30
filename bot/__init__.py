@@ -43,7 +43,7 @@ SHORTENERES              = []
 SHORTENER_APIS           = []
 BUTTON_NAMES             = []
 BUTTON_URLS              = []
-CATEGORY_INDEXES          = []
+CATEGORY_INDEXES         = []
 GLOBAL_EXTENSION_FILTER  = ['.aria2']
 user_data                = {}
 aria2_options            = {}
@@ -77,8 +77,7 @@ rss_dict = {}
 btn_listener = {}
 
 for file_ in ['pyrogram.session', 'pyrogram.session-journal',
-            'rss_session.session', 'rss_session.session-journal',
-            'buttons.txt', 'shorteners.txt', 'categories.txt']:
+              'rss_session.session', 'rss_session.session-journal']:
     if path.exists(file_):
         remove(file_)
 
@@ -334,7 +333,7 @@ if len(UPSTREAM_REPO) == 0:
 
 UPSTREAM_BRANCH = environ.get('UPSTREAM_BRANCH', '')
 if len(UPSTREAM_BRANCH) == 0:
-    UPSTREAM_BRANCH = 'master'
+    UPSTREAM_BRANCH = ''
 
 STORAGE_THRESHOLD = environ.get('STORAGE_THRESHOLD', '')
 STORAGE_THRESHOLD = '' if len(STORAGE_THRESHOLD) == 0 else float(STORAGE_THRESHOLD)
@@ -521,6 +520,7 @@ run(["qbittorrent-nox", "-d", "--profile=."])
 if not path.exists('.netrc'):
     run(["touch", ".netrc"])
 run(["cp", ".netrc", "/root/.netrc"])
+run(["chmod", "600", "/root/.netrc"])
 run(["chmod", "600", ".netrc"])
 run(["chmod", "+x", "aria.sh"])
 run("./aria.sh", shell=True)
