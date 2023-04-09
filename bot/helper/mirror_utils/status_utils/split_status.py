@@ -1,6 +1,7 @@
 from time import time
 from bot import DOWNLOAD_DIR, LOGGER
-from bot.helper.ext_utils.bot_utils import get_readable_file_size, MirrorStatus, get_readable_time
+from bot.helper.ext_utils.bot_utils import (get_readable_file_size, MirrorStatus,
+                                            get_readable_time, async_to_sync)
 from bot.helper.ext_utils.fs_utils import get_path_size
 
 class SplitStatus:
@@ -11,19 +12,19 @@ class SplitStatus:
         self.__listener = listener
         self.__uid = listener.uid
         self.__start_time = time()
-        self.message = self.__listener.message
-        self.source = self.__source()
-        self.engine = "ffmpeg"
+        self.message = listener.message
+        self.extra_details = self.__listener.extra_details
+        self.engine = "FFmpeg v4.4.2"
 
     def gid(self):
         return self.__gid
 
     def speed_raw(self):
-        return self.processed_bytes() / (time() - self.__start_time)
+        return self.processed_raw() / (time() - self.__start_time)
 
     def progress_raw(self):
         try:
-            return self.processed_bytes() / self.__size * 100
+            return self.processed_raw() / self.__size * 100
         except:
             return 0
 
@@ -36,15 +37,12 @@ class SplitStatus:
     def name(self):
         return self.__name
 
-    def size_raw(self):
-        return self.__size
-
     def size(self):
         return get_readable_file_size(self.__size)
 
     def eta(self):
         try:
-            seconds = (self.size_raw() - self.processed_bytes()) / self.speed_raw()
+            seconds = (self.__size - self.processed_raw()) / self.speed_raw()
             return f'{get_readable_time(seconds)}'
         except:
             return '-'
@@ -52,23 +50,19 @@ class SplitStatus:
     def status(self):
         return MirrorStatus.STATUS_SPLITTING
 
+    def processed_raw(self):
+        return async_to_sync(get_path_size, self.__listener.dir) - self.__size
+
     def processed_bytes(self):
-        return get_path_size(f"{DOWNLOAD_DIR}{self.__uid}") - self.__size
+        return get_readable_file_size(self.processed_raw())
 
     def download(self):
         return self
 
-    def cancel_download(self):
+    async def cancel_download(self):
         LOGGER.info(f'Cancelling Split: {self.__name}')
         if self.__listener.suproc:
             self.__listener.suproc.kill()
-        self.__listener.onUploadError('Splitting stopped by user!')
-
-    def __source(self):
-        reply_to = self.message.reply_to_message
-        return reply_to.from_user.username or reply_to.from_user.id if reply_to and \
-            not reply_to.from_user.is_bot else self.message.from_user.username \
-                or self.message.from_user.id
-
-    def mode(self):
-        return self.__listener.mode
+        else:
+            self.__listener.suproc = 'cancelled'
+        await self.__listener.onUploadError('splitting stopped by user!')
